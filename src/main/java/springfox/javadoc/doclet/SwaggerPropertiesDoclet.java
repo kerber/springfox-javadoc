@@ -22,6 +22,8 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Properties;
 
 // the NOSONAR comment is added to ignore sonar warning about usage of Sun classes
@@ -242,44 +244,104 @@ public class SwaggerPropertiesDoclet {
         for(AnnotationDesc annotationDesc : methodDoc.annotations()) {
             String annotationType = annotationDesc.annotationType().toString();
             if(isMapping(annotationType)) {
-                StringBuilder path = new StringBuilder(pathRoot);
-                for(AnnotationDesc.ElementValuePair pair : annotationDesc.elementValues()) {
-                    if(VALUE.equals(pair.element().name()) || PATH.equals(pair.element().name())) {
-                        appendPath(path, pair);
-                        break;
-                    }
-                }
-                String requestMethod = getRequestMethod(annotationDesc, annotationType, defaultRequestMethod);
-                if(requestMethod != null) {
-                    path.append(requestMethod);
-                    saveProperty(properties, path.toString() + ".notes", methodDoc.commentText());
-
-                    for(ParamTag paramTag : methodDoc.paramTags()) {
-                        saveProperty(properties, path.toString() + ".param." + paramTag.parameterName(),
-                                paramTag.parameterComment());
-                    }
-                    for(Tag tag : methodDoc.tags()) {
-                        if(tag.name().equals(RETURN)) {
-                            saveProperty(properties, path.toString() + ".return", tag.text());
-                            break;
+                StringBuilder path = new StringBuilder();
+                for (String pathRequest : getRequestPathValues(annotationDesc)) {
+                    String requestMethod = getRequestMethod(annotationDesc, annotationType, defaultRequestMethod);
+                    if(requestMethod != null) {
+                        path.setLength(0);
+                        path.append(pathRoot);
+                        appendPath(path,pathRequest);
+                        MethodDoc relevantMethod = methodDoc;
+                        if (methodDoc.commentText() == null || "".equals(methodDoc.commentText())) {
+                            relevantMethod = findMatchingInterfaceMethodDoc(methodDoc.containingClass().interfaces(), methodDoc);
                         }
-                    }
-                    if(excetionRef) {
-                        processThrows(properties, methodDoc.throwsTags(), path);
+                        if ( relevantMethod == null ) {
+                            relevantMethod = methodDoc;
+                        }
+                        path.append(requestMethod);
+                        saveProperty(properties, path.toString() + ".notes", relevantMethod.commentText());
+
+                        for(ParamTag paramTag : relevantMethod.paramTags()) {
+                            saveProperty(properties, path.toString() + ".param." + paramTag.parameterName(),
+                                    paramTag.parameterComment());
+                        }
+                        for(Tag tag : relevantMethod.tags()) {
+                            if(tag.name().equals(RETURN)) {
+                                saveProperty(properties, path.toString() + ".return", tag.text());
+                                break;
+                            }
+                        }
+                        if(excetionRef) {
+                            processThrows(properties, relevantMethod.throwsTags(), path);
+                        }
                     }
                 }
             }
         }
     }
 
-    private static void appendPath(StringBuilder path, AnnotationDesc.ElementValuePair pair) {
-        String value = pair.value().toString().replaceAll("\"$|^\"", "");
+    private static String[] getRequestPathValues(AnnotationDesc annotationDesc) {
+        List<String> pathValues = new ArrayList<String>();
+        for(AnnotationDesc.ElementValuePair pair : annotationDesc.elementValues()) {
+            if(VALUE.equals(pair.element().name()) || PATH.equals(pair.element().name())) {
+                String values = pair.value().toString().replaceAll("^\\{|\\}$", "");
+                StringBuilder sb = new StringBuilder();
+                return values.split(",\\ ");
+            }
+        }
+        return new String[0];
+    }
+
+    private static void appendPath(StringBuilder path, String requestPath) {
+        String value = requestPath.replaceAll("^\"|\"$", "").replaceAll("\\\\\\\\", "\\\\");
         if(value.startsWith("/")) {
             path.append(value).append(".");
         } else {
             path.append("/").append(value).append(".");
         }
     }
+
+    /**
+     * Scan the given list of ClassDoc for a MethodDoc with a matching signature.<br/>
+     * <br/>
+     * See <a href=
+     * "https://github.com/gwtproject/gwt/blob/master/build_tools/doctool/src/com/google/doctool/Booklet.java#L436"/>
+     * <b>Project</b>: GWT Open Source Project <b>File</b>: Booklet.java</a>
+     */
+    private static MethodDoc findMatchingInterfaceMethodDoc(ClassDoc[] interfaces, MethodDoc methodDoc) {
+        if (interfaces != null) {
+            // Look through the methods on superInterface for a matching methodDoc.
+            //
+            for (int intfIndex = 0; intfIndex < interfaces.length; ++intfIndex) {
+                ClassDoc currentIntfDoc = interfaces[intfIndex];
+                MethodDoc[] intfMethodDocs = currentIntfDoc.methods();
+                for (int methodIndex = 0; methodIndex < intfMethodDocs.length; ++methodIndex) {
+                    MethodDoc intfMethodDoc = intfMethodDocs[methodIndex];
+                    String methodDocName = methodDoc.name();
+                    String intfMethodDocName = intfMethodDoc.name();
+                    if (methodDocName.equals(intfMethodDocName)) {
+                        if (methodDoc.signature().equals(intfMethodDoc.signature())) {
+                            // It's a match!
+                            //
+                            return intfMethodDoc;
+                        }
+                    }
+                }
+
+                // Try the superinterfaces of this interface.
+                //
+                MethodDoc foundMethodDoc = findMatchingInterfaceMethodDoc( currentIntfDoc.interfaces(), methodDoc);
+                if (foundMethodDoc != null) {
+                    return foundMethodDoc;
+                }
+            }
+        }
+        // Just didn't find it anywhere. Must not be based on an implemented
+        // interface.
+        //
+        return null;
+    }
+
 
     private static boolean isMapping(String name) {
         for(String mapping : MAPPINGS) {
